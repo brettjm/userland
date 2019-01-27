@@ -809,7 +809,7 @@ static void encoder_buffer_callback(MMAL_PORT_T *port, MMAL_BUFFER_HEADER_T *buf
 
    // All our segment times based on the receipt of the first encoder callback
    if (base_time == -1)
-      base_time = vcos_getmicrosecs64()/1000;
+      base_time = get_microseconds64()/1000;
 
    // We pass our file handle and other stuff in via the userdata field.
 
@@ -818,7 +818,7 @@ static void encoder_buffer_callback(MMAL_PORT_T *port, MMAL_BUFFER_HEADER_T *buf
    if (pData)
    {
       int bytes_written = buffer->length;
-      int64_t current_time = vcos_getmicrosecs64()/1000;
+      int64_t current_time = get_microseconds64()/1000;
 
       vcos_assert(pData->file_handle);
       if(pData->pstate->inlineMotionVectors) vcos_assert(pData->imv_file_handle);
@@ -1869,7 +1869,7 @@ static int wait_for_next_change(RASPIVID_STATE *state)
    static int64_t complete_time = -1;
 
    // Have we actually exceeded our timeout?
-   int64_t current_time =  vcos_getmicrosecs64()/1000;
+   int64_t current_time =  get_microseconds64()/1000;
 
    if (complete_time == -1)
       complete_time =  current_time + state->timeout;
@@ -1886,10 +1886,10 @@ static int wait_for_next_change(RASPIVID_STATE *state)
 
    case WAIT_METHOD_FOREVER:
    {
-      // We never return from this. Expect a ctrl-c to exit.
-      while (1)
+      // We never return from this. Expect a ctrl-c to exit or abort.
+      while (!state->callback_data.abort)
          // Have a sleep so we don't hog the CPU.
-         vcos_sleep(10000);
+         vcos_sleep(ABORT_INTERVAL);
 
       return 0;
    }
@@ -2016,6 +2016,7 @@ int main(int argc, const char **argv)
    // Disable USR1 for the moment - may be reenabled if go in to signal capture mode
    signal(SIGUSR1, SIG_IGN);
 
+   set_app_name(argv[0]);
    default_status(&state);
 
    // Set other state parameters
@@ -2028,6 +2029,12 @@ int main(int argc, const char **argv)
    // Setup for sensor specific parameters, only set W/H settings if zero on entry
    get_sensor_defaults(state.common_settings.cameraNum, state.common_settings.camera_name,
                        &state.common_settings.width, &state.common_settings.height);
+
+   if (state.common_settings.verbose)
+   {
+      print_app_details(stderr);
+      dump_status(&state);
+   }
 
    check_camera_model(state.common_settings.cameraNum);
 
@@ -2050,6 +2057,14 @@ int main(int argc, const char **argv)
       destroy_camera_component(&state);
       exit_code = EX_SOFTWARE;
    }
+   else if (state.raw_output && (status = create_splitter_component(&state)) != MMAL_SUCCESS)
+   {
+      vcos_log_error("%s: Failed to create splitter component", __func__);
+      raspipreview_destroy(&state.preview_parameters);
+      destroy_camera_component(&state);
+      destroy_encoder_component(&state);
+      exit_code = EX_SOFTWARE;
+   }
    else
    {
       if (state.common_settings.verbose)
@@ -2062,23 +2077,75 @@ int main(int argc, const char **argv)
       encoder_input_port  = state.encoder_component->input[0];
       encoder_output_port = state.encoder_component->output[0];
 
+      if (state.raw_output)
+      {
+         splitter_input_port = state.splitter_component->input[0];
+         splitter_output_port = state.splitter_component->output[SPLITTER_OUTPUT_PORT];
+         splitter_preview_port = state.splitter_component->output[SPLITTER_PREVIEW_PORT];
+      }
+
       if (state.preview_parameters.wantPreview )
       {
-         if (state.common_settings.verbose)
+         if (state.raw_output)
          {
-            fprintf(stderr, "Connecting camera preview port to preview input port\n");
-            fprintf(stderr, "Starting video preview\n");
+            if (state.common_settings.verbose)
+               fprintf(stderr, "Connecting camera preview port to splitter input port\n");
+
+            // Connect camera to splitter
+            status = connect_ports(camera_preview_port, splitter_input_port, &state.splitter_connection);
+
+            if (status != MMAL_SUCCESS)
+            {
+               state.splitter_connection = NULL;
+               vcos_log_error("%s: Failed to connect camera preview port to splitter input", __func__);
+               goto error;
+            }
+
+            if (state.common_settings.verbose)
+            {
+               fprintf(stderr, "Connecting splitter preview port to preview input port\n");
+               fprintf(stderr, "Starting video preview\n");
+            }
+
+            // Connect splitter to preview
+            status = connect_ports(splitter_preview_port, preview_input_port, &state.preview_connection);
+         }
+         else
+         {
+            if (state.common_settings.verbose)
+            {
+               fprintf(stderr, "Connecting camera preview port to preview input port\n");
+               fprintf(stderr, "Starting video preview\n");
+            }
+
+            // Connect camera to preview
+            status = connect_ports(camera_preview_port, preview_input_port, &state.preview_connection);
          }
 
-         // Connect camera to preview
-         status = connect_ports(camera_preview_port, preview_input_port, &state.preview_connection);
-         
          if (status != MMAL_SUCCESS)
             state.preview_connection = NULL;
       }
       else
       {
-         status = MMAL_SUCCESS;
+         if (state.raw_output)
+         {
+            if (state.common_settings.verbose)
+               fprintf(stderr, "Connecting camera preview port to splitter input port\n");
+
+            // Connect camera to splitter
+            status = connect_ports(camera_preview_port, splitter_input_port, &state.splitter_connection);
+
+            if (status != MMAL_SUCCESS)
+            {
+               state.splitter_connection = NULL;
+               vcos_log_error("%s: Failed to connect camera preview port to splitter input", __func__);
+               goto error;
+            }
+         }
+         else
+         {
+            status = MMAL_SUCCESS;
+         }
       }
 
       if (status == MMAL_SUCCESS)
@@ -2095,15 +2162,43 @@ int main(int argc, const char **argv)
             vcos_log_error("%s: Failed to connect camera video port to encoder input", __func__);
             goto error;
          }
+      }
 
+      if (status == MMAL_SUCCESS)
+      {
          // Set up our userdata - this is passed though to the callback where we need the information.
          state.callback_data.pstate = &state;
          state.callback_data.abort = 0;
+
+         if (state.raw_output)
+         {
+            splitter_output_port->userdata = (struct MMAL_PORT_USERDATA_T *)&state.callback_data;
+
+            if (state.common_settings.verbose)
+               fprintf(stderr, "Enabling splitter output port\n");
+
+            // Enable the splitter output port and tell it its callback function
+            status = mmal_port_enable(splitter_output_port, splitter_buffer_callback);
+
+            if (status != MMAL_SUCCESS)
+            {
+               vcos_log_error("%s: Failed to setup splitter output port", __func__);
+               goto error;
+            }
+         }
+
          state.callback_data.file_handle = NULL;
 
          if (state.common_settings.filename)
          {
-            state.callback_data.file_handle = open_filename(&state, state.common_settings.filename);
+            if (state.common_settings.filename[0] == '-')
+            {
+               state.callback_data.file_handle = stdout;
+            }
+            else
+            {
+               state.callback_data.file_handle = open_filename(&state, state.common_settings.filename);
+            }
 
             if (!state.callback_data.file_handle)
             {
@@ -2157,6 +2252,25 @@ int main(int argc, const char **argv)
          }
 
          state.callback_data.raw_file_handle = NULL;
+
+         if (state.raw_filename)
+         {
+            if (state.raw_filename[0] == '-')
+            {
+               state.callback_data.raw_file_handle = stdout;
+            }
+            else
+            {
+               state.callback_data.raw_file_handle = open_filename(&state, state.raw_filename);
+            }
+
+            if (!state.callback_data.raw_file_handle)
+            {
+               // Notify user, carry on but discarding encoded output buffers
+               fprintf(stderr, "Error opening output file: %s\nNo output file will be generated\n", state.raw_filename);
+               state.raw_output = 0;
+            }
+         }
 
          if(state.bCircularBuffer)
          {
@@ -2322,6 +2436,26 @@ int main(int argc, const char **argv)
       {
          mmal_status_to_int(status);
          vcos_log_error("%s: Failed to connect camera to preview", __func__);
+      }
+
+      if(state.bCircularBuffer)
+      {
+         int copy_from_end, copy_from_start;
+
+         copy_from_end = state.callback_data.cb_len - state.callback_data.iframe_buff[state.callback_data.iframe_buff_rpos];
+         copy_from_start = state.callback_data.cb_len - copy_from_end;
+         copy_from_start = state.callback_data.cb_wptr < copy_from_start ? state.callback_data.cb_wptr : copy_from_start;
+         if(!state.callback_data.cb_wrap)
+         {
+            copy_from_start = state.callback_data.cb_wptr;
+            copy_from_end = 0;
+         }
+
+         fwrite(state.callback_data.header_bytes, 1, state.callback_data.header_wptr, state.callback_data.file_handle);
+         // Save circular buffer
+         fwrite(state.callback_data.cb_buff + state.callback_data.iframe_buff[state.callback_data.iframe_buff_rpos], 1, copy_from_end, state.callback_data.file_handle);
+         fwrite(state.callback_data.cb_buff, 1, copy_from_start, state.callback_data.file_handle);
+         if(state.callback_data.flush_buffers) fflush(state.callback_data.file_handle);
       }
 
 error:
