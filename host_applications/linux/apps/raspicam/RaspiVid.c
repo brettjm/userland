@@ -2022,9 +2022,8 @@ int main(int argc, const char **argv)
    // Set other state parameters
    state.common_settings.filename = outputFile;
    state.raw_output = 0;
-
-   if (state.timeout == -1)
-      state.timeout = 5000;
+   state.timeout = 0;
+   state.common_settings.verbose = 1;
 
    // Setup for sensor specific parameters, only set W/H settings if zero on entry
    get_sensor_defaults(state.common_settings.cameraNum, state.common_settings.camera_name,
@@ -2338,7 +2337,7 @@ int main(int argc, const char **argv)
          {
             int running = 1;
 
-               // Send all the buffers to the encoder output port
+            // Send all the buffers to the encoder output port
             if (state.callback_data.file_handle)
             {
                int num = mmal_queue_length(state.encoder_pool->queue);
@@ -2355,7 +2354,7 @@ int main(int argc, const char **argv)
                }
             }
 
-               // Send all the buffers to the splitter output port
+            // Send all the buffers to the splitter output port
             if (state.callback_data.raw_file_handle)
             {
                int num = mmal_queue_length(state.splitter_pool->queue);
@@ -2381,10 +2380,10 @@ int main(int argc, const char **argv)
 
                if (mmal_port_parameter_set_boolean(camera_video_port, MMAL_PARAMETER_CAPTURE, state.bCapturing) != MMAL_SUCCESS)
                {
-                     // How to handle?
+                  // How to handle?
                }
 
-                  // In circular buffer mode, exit and save the buffer (make sure we do this after having paused the capture
+               // In circular buffer mode, exit and save the buffer (make sure we do this after having paused the capture
                if(state.bCircularBuffer && !state.bCapturing)
                {
                   break;
@@ -2426,7 +2425,7 @@ int main(int argc, const char **argv)
                vcos_sleep(state.timeout);
             else
             {
-                  // timeout = 0 so run forever
+               // timeout = 0 so run forever
                while(1)
                   vcos_sleep(ABORT_INTERVAL);
             }
@@ -2514,9 +2513,6 @@ error:
 
    if (status != MMAL_SUCCESS)
       raspicamcontrol_check_configuration(128);
-
-   if (state.common_settings.gps)
-      raspi_gps_shutdown(state.common_settings.verbose);
 
    return exit_code;
 }
