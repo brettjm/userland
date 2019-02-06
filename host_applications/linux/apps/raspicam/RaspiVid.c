@@ -419,6 +419,15 @@ static void default_status(RASPIVID_STATE *state)
 
    // Set up the camera_parameters to default
    raspicamcontrol_set_defaults(&state->camera_parameters);
+
+
+   // Set other state parameters
+   state->preview_parameters->wantFullScreenPreview = 0;
+   state->common_settings.filename = outputFile;
+   state->common_settings.verbose = 1;
+   state->waitMethod = WAIT_METHOD_FOREVER;
+   state->raw_output = 0;
+   state->timeout = 0;
 }
 
 static void check_camera_model(int cam_num)
@@ -2018,12 +2027,6 @@ int main(int argc, const char **argv)
 
    set_app_name(argv[0]);
    default_status(&state);
-
-   // Set other state parameters
-   state.common_settings.filename = outputFile;
-   state.raw_output = 0;
-   state.timeout = 0;
-   state.common_settings.verbose = 1;
 
    // Setup for sensor specific parameters, only set W/H settings if zero on entry
    get_sensor_defaults(state.common_settings.cameraNum, state.common_settings.camera_name,
