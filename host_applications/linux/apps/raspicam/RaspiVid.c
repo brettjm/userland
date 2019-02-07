@@ -2334,103 +2334,121 @@ int main(int argc, const char **argv)
             goto error;
          }
 
-            // Only encode stuff if we have a filename and it opened
-            // Note we use the copy in the callback, as the call back MIGHT change the file handle
-         if (state.callback_data.file_handle || state.callback_data.raw_file_handle)
+         if (state.demoMode)
          {
-            int running = 1;
-
-            // Send all the buffers to the encoder output port
-            if (state.callback_data.file_handle)
-            {
-               int num = mmal_queue_length(state.encoder_pool->queue);
-               int q;
-               for (q=0; q<num; q++)
-               {
-                  MMAL_BUFFER_HEADER_T *buffer = mmal_queue_get(state.encoder_pool->queue);
-
-                  if (!buffer)
-                     vcos_log_error("Unable to get a required buffer %d from pool queue", q);
-
-                  if (mmal_port_send_buffer(encoder_output_port, buffer)!= MMAL_SUCCESS)
-                     vcos_log_error("Unable to send a buffer to encoder output port (%d)", q);
-               }
-            }
-
-            // Send all the buffers to the splitter output port
-            if (state.callback_data.raw_file_handle)
-            {
-               int num = mmal_queue_length(state.splitter_pool->queue);
-               int q;
-               for (q = 0; q < num; q++)
-               {
-                  MMAL_BUFFER_HEADER_T *buffer = mmal_queue_get(state.splitter_pool->queue);
-
-                  if (!buffer)
-                     vcos_log_error("Unable to get a required buffer %d from pool queue", q);
-
-                  if (mmal_port_send_buffer(splitter_output_port, buffer)!= MMAL_SUCCESS)
-                     vcos_log_error("Unable to send a buffer to splitter output port (%d)", q);
-               }
-            }
-
-            int initialCapturing=state.bCapturing;
-            while (running)
-            {
-                  // Change state
-
-               state.bCapturing = !state.bCapturing;
-
-               if (mmal_port_parameter_set_boolean(camera_video_port, MMAL_PARAMETER_CAPTURE, state.bCapturing) != MMAL_SUCCESS)
-               {
-                  // How to handle?
-               }
-
-               // In circular buffer mode, exit and save the buffer (make sure we do this after having paused the capture
-               if(state.bCircularBuffer && !state.bCapturing)
-               {
-                  break;
-               }
-
-               if (state.common_settings.verbose)
-               {
-                  if (state.bCapturing)
-                     fprintf(stderr, "Starting video capture\n");
-                  else
-                     fprintf(stderr, "Pausing video capture\n");
-               }
-
-               if(state.splitWait)
-               {
-                  if(state.bCapturing)
-                  {
-                     if (mmal_port_parameter_set_boolean(encoder_output_port, MMAL_PARAMETER_VIDEO_REQUEST_I_FRAME, 1) != MMAL_SUCCESS)
-                     {
-                        vcos_log_error("failed to request I-FRAME");
-                     }
-                  }
-                  else
-                  {
-                     if(!initialCapturing)
-                        state.splitNow=1;
-                  }
-                  initialCapturing=0;
-               }
-               running = wait_for_next_change(&state);
-            }
+            // Run for the user specific time..
+            int num_iterations = state.timeout / state.demoInterval;
+            int i;
 
             if (state.common_settings.verbose)
-               fprintf(stderr, "Finished capture\n");
+               fprintf(stderr, "Running in demo mode\n");
+
+            for (i=0; state.timeout == 0 || i<num_iterations; i++)
+            {
+               raspicamcontrol_cycle_test(state.camera_component);
+               vcos_sleep(state.demoInterval);
+            }
          }
          else
          {
-            if (state.timeout)
-               vcos_sleep(state.timeout);
+            // Only encode stuff if we have a filename and it opened
+            // Note we use the copy in the callback, as the call back MIGHT change the file handle
+            if (state.callback_data.file_handle || state.callback_data.raw_file_handle)
+            {
+               int running = 1;
+
+               // Send all the buffers to the encoder output port
+               if (state.callback_data.file_handle)
+               {
+                  int num = mmal_queue_length(state.encoder_pool->queue);
+                  int q;
+                  for (q=0; q<num; q++)
+                  {
+                     MMAL_BUFFER_HEADER_T *buffer = mmal_queue_get(state.encoder_pool->queue);
+
+                     if (!buffer)
+                        vcos_log_error("Unable to get a required buffer %d from pool queue", q);
+
+                     if (mmal_port_send_buffer(encoder_output_port, buffer)!= MMAL_SUCCESS)
+                        vcos_log_error("Unable to send a buffer to encoder output port (%d)", q);
+                  }
+               }
+
+               // Send all the buffers to the splitter output port
+               if (state.callback_data.raw_file_handle)
+               {
+                  int num = mmal_queue_length(state.splitter_pool->queue);
+                  int q;
+                  for (q = 0; q < num; q++)
+                  {
+                     MMAL_BUFFER_HEADER_T *buffer = mmal_queue_get(state.splitter_pool->queue);
+
+                     if (!buffer)
+                        vcos_log_error("Unable to get a required buffer %d from pool queue", q);
+
+                     if (mmal_port_send_buffer(splitter_output_port, buffer)!= MMAL_SUCCESS)
+                        vcos_log_error("Unable to send a buffer to splitter output port (%d)", q);
+                  }
+               }
+
+               int initialCapturing=state.bCapturing;
+               while (running)
+               {
+                  // Change state
+
+                  state.bCapturing = !state.bCapturing;
+
+                  if (mmal_port_parameter_set_boolean(camera_video_port, MMAL_PARAMETER_CAPTURE, state.bCapturing) != MMAL_SUCCESS)
+                  {
+                     // How to handle?
+                  }
+
+                  // In circular buffer mode, exit and save the buffer (make sure we do this after having paused the capture
+                  if(state.bCircularBuffer && !state.bCapturing)
+                  {
+                     break;
+                  }
+
+                  if (state.common_settings.verbose)
+                  {
+                     if (state.bCapturing)
+                        fprintf(stderr, "Starting video capture\n");
+                     else
+                        fprintf(stderr, "Pausing video capture\n");
+                  }
+
+                  if(state.splitWait)
+                  {
+                     if(state.bCapturing)
+                     {
+                        if (mmal_port_parameter_set_boolean(encoder_output_port, MMAL_PARAMETER_VIDEO_REQUEST_I_FRAME, 1) != MMAL_SUCCESS)
+                        {
+                           vcos_log_error("failed to request I-FRAME");
+                        }
+                     }
+                     else
+                     {
+                        if(!initialCapturing)
+                           state.splitNow=1;
+                     }
+                     initialCapturing=0;
+                  }
+                  running = wait_for_next_change(&state);
+               }
+
+               if (state.common_settings.verbose)
+                  fprintf(stderr, "Finished capture\n");
+            }
             else
             {
-               // timeout = 0 so run forever
-               while(1)
-                  vcos_sleep(ABORT_INTERVAL);
+               if (state.timeout)
+                  vcos_sleep(state.timeout);
+               else
+               {
+                  // timeout = 0 so run forever
+                  while(1)
+                     vcos_sleep(ABORT_INTERVAL);
+               }
             }
          }
       }
